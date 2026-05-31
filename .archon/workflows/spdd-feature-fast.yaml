@@ -1,0 +1,234 @@
+name: spdd-feature-fast
+description: |
+  Fast-track SPDD for small features. Reads feature context from an existing
+  Linear issue. Minimal analysis, lite Canvas, risk classification,
+  test-plan-lite for medium/high risk, TDD implementation, validation, review and PR.
+
+  Input: Linear issue identifier (e.g. "ENG-123"). No GitHub issue created —
+  PR links directly to Linear via "Closes ENG-NNN" magic words.
+
+provider: claude
+model: sonnet
+interactive: true
+
+nodes:
+  - id: setup
+    model: haiku
+    prompt: |
+      Read the Linear issue specified in $ARGUMENTS (format: "ENG-NNN").
+
+      1. Extract the Linear issue identifier from $ARGUMENTS.
+      2. Read `.spdd/config.yml` → get `linear.api_key_env`.
+         Resolve API key:
+         KEY_VAR=$(grep 'api_key_env:' .spdd/config.yml | awk '{print $2}' | tr -d '"')
+         KEY=$(printenv "$KEY_VAR")
+         If KEY is empty, abort: "LINEAR_API_KEY env var not set."
+      3. Fetch issue from Linear:
+         curl -s -X POST https://api.linear.app/graphql \
+           -H "Authorization: $KEY" \
+           -H "Content-Type: application/json" \
+           -d '{"query":"query{issue(id:\"ENG-NNN\"){identifier title description url}}"}'
+      4. Write `.spdd/meta.yml`:
+         feature: "<title from Linear>"
+         linear_issue_id: "ENG-NNN"
+         linear_issue_url: "<url>"
+         issue_number: ""
+         item_id: "ENG-NNN"
+         workflow: spdd-feature-fast
+         started_at: <current ISO timestamp>
+      5. Write `.spdd/costs.yml`: []
+
+      Output exactly: ISSUE=ENG-NNN
+
+  - id: setup-board
+    model: haiku
+    depends_on: [setup]
+    prompt: |
+      Load and execute: .archon/commands/linear-setup-board.md
+
+  - id: research-lite
+    model: haiku
+    depends_on: [setup-board]
+    prompt: |
+      Read `.spdd/meta.yml` for feature title and description.
+      Read `.spdd/config.yml`.
+      Produce `.spdd/analysis/FEAT-{NNN}_lite.md` with:
+      problem, desired outcome, scope, risks and assumptions.
+
+      ## Cost tracking
+      Append to `.spdd/costs.yml`:
+      - node: research-lite
+        model: haiku
+        completed_at: <current ISO timestamp>
+        artifacts:
+          - .spdd/analysis/FEAT-{NNN}_lite.md
+
+  - id: canvas-lite
+    model: sonnet
+    depends_on: [research-lite]
+    prompt: |
+      Read `.spdd/config.yml`, load architect SKILL from `brain_path`, and
+      create `.spdd/canvas/FEAT-{NNN}_{slug}.md` with `status: approved`,
+      `approval_mode: fast-track`.
+      Keep REASONS concise but include executable Operations.
+
+      ## Cost tracking
+      Append to `.spdd/costs.yml`:
+      - node: canvas-lite
+        model: sonnet
+        completed_at: <current ISO timestamp>
+        artifacts:
+          - .spdd/canvas/FEAT-{NNN}_{slug}.md
+
+  - id: risk-classifier
+    model: haiku
+    depends_on: [canvas-lite]
+    prompt: |
+      Classify feature risk from Canvas as exactly one line:
+      `RISK=LOW`, `RISK=MEDIUM`, or `RISK=HIGH`.
+
+      Medium or high if it touches auth, payments, sensitive data,
+      permissions, database schema, public API behavior, critical UX,
+      concurrency, cache, async jobs, external integrations, hard rollback,
+      or ambiguous requirements.
+
+      ## Cost tracking
+      Append to `.spdd/costs.yml`:
+      - node: risk-classifier
+        model: haiku
+        completed_at: <current ISO timestamp>
+        artifacts: []
+
+  - id: test-plan-lite
+    model: sonnet
+    depends_on: [risk-classifier]
+    prompt: |
+      Read `.spdd/config.yml` and load test-engineer SKILL from `brain_path`.
+      Read Canvas and risk-classifier output.
+
+      Write `.spdd/tests/FEAT-{NNN}_test-plan-lite.md`.
+      If risk is LOW, state that Canvas-derived TDD is sufficient and list
+      only must-test behaviors. If risk is MEDIUM or HIGH, produce a concrete
+      lite test plan with edge cases and validation commands.
+
+      ## Cost tracking
+      Append to `.spdd/costs.yml`:
+      - node: test-plan-lite
+        model: sonnet
+        completed_at: <current ISO timestamp>
+        artifacts:
+          - .spdd/tests/FEAT-{NNN}_test-plan-lite.md
+
+  - id: implement
+    model: sonnet
+    depends_on: [test-plan-lite]
+    loop:
+      prompt: |
+        Load implementer SKILL from `brain_path`.
+        Use Canvas plus `.spdd/tests/FEAT-{NNN}_test-plan-lite.md`.
+        Execute one unfinished Operation using Red-Green-Refactor.
+        Commit atomically and mark the Operation done.
+
+        Append to `.spdd/costs.yml`:
+        - node: implement
+          model: sonnet
+          completed_at: <current ISO timestamp>
+          artifacts: []
+
+        If all Operations are done, respond exactly `ALL_TASKS_COMPLETE`.
+      until: ALL_TASKS_COMPLETE
+      fresh_context: true
+      max_iterations: 20
+
+  - id: validation
+    model: sonnet
+    depends_on: [implement]
+    prompt: |
+      Run npm test, npm run typecheck, and npm run lint if present.
+      Fix failures. If all pass, respond `VALIDATION_PASSED`.
+
+      ## Cost tracking
+      Append to `.spdd/costs.yml`:
+      - node: validation
+        model: sonnet
+        completed_at: <current ISO timestamp>
+        artifacts: []
+
+  - id: review
+    model: sonnet
+    depends_on: [validation]
+    prompt: |
+      ## Code Review
+
+      Read `.spdd/config.yml` → check `workflow.reviewer` (default: `claude` if absent).
+
+      ### If reviewer = claude (or field missing):
+      Load code-reviewer SKILL from `brain_path`.
+      Review diff against Canvas, test-plan-lite, Golden Principles, Norms
+      and Safeguards. Save `.spdd/reviews/FEAT-{NNN}_review.md`.
+
+      ### If reviewer = codex:
+      1. Read `.spdd/meta.yml` → extract NNN from linear_issue_id (zero-padded to 3 digits).
+      2. Run: mkdir -p .spdd/reviews
+      3. Run:
+         codex review --base main > .spdd/reviews/FEAT-{NNN}_review.md
+      4. Verify file is non-empty; if not, write fallback: "# Codex Review\nreviewer: codex\nverdict: error\nCodex returned no output."
+
+      ## Cost tracking
+      Append to `.spdd/costs.yml`:
+      - node: review
+        model: <sonnet if reviewer=claude | codex if reviewer=codex>
+        completed_at: <current ISO timestamp>
+        artifacts:
+          - .spdd/reviews/FEAT-{NNN}_review.md
+
+  - id: create-pr
+    model: sonnet
+    depends_on: [review]
+    prompt: |
+      ## Cost Estimate
+      1. Read `.spdd/costs.yml` (list of {node, model, artifacts}).
+      2. For each entry, read each artifact file and count total characters. Divide by 4 to estimate tokens.
+         Nodes with empty artifacts list use 200 tokens as a baseline estimate.
+      3. Apply output token pricing: haiku=$1.25/M, sonnet=$15/M, opus=$75/M.
+         For entries with model=codex, mark cost as "$0.00 (OpenAI — billed separately)".
+      4. Build a markdown table:
+         | Node | Model | Est. Tokens | Est. Cost |
+         |------|-------|-------------|-----------|
+         | **Total** | | ~NNN | ~$0.00 |
+      Save table as COST_TABLE variable.
+
+      ## Create PR
+      1. Read `.spdd/meta.yml` → get linear_issue_id (e.g. ENG-123) and feature title.
+      2. Extract NNN from linear_issue_id.
+      3. Push branch: git push -u origin HEAD
+      4. Create PR:
+         gh pr create \
+           --title "feat(FEAT-{NNN}): {slug}" \
+           --body "Closes {linear_issue_id}
+
+         ## Canvas
+         See \`.spdd/canvas/FEAT-{NNN}_{slug}.md\`
+
+         ## Test plan
+         See \`.spdd/tests/FEAT-{NNN}_test-plan-lite.md\`
+
+         ## Review
+         See \`.spdd/reviews/FEAT-{NNN}_review.md\`
+
+         ## Cost Estimate
+         {COST_TABLE}"
+      5. Apply labels: type:feature, review:pending
+      6. Post cost table as comment on Linear issue:
+         COMMENT_BODY="## Cost Estimate (spdd-feature-fast)\n\n{COST_TABLE}"
+         Load and execute: .archon/commands/linear-post-comment.md
+      7. Update Linear issue state → In Review:
+         Load and execute: .archon/commands/linear-mark-in-review.md
+      8. Report PR URL.
+
+      ## Cost tracking
+      Append to `.spdd/costs.yml`:
+      - node: create-pr
+        model: sonnet
+        completed_at: <current ISO timestamp>
+        artifacts: []

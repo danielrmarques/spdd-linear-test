@@ -1,0 +1,316 @@
+name: spdd-feature
+description: |
+  Default SPDD feature workflow. Alias-equivalent to spdd-feature-balanced.
+  Balanced flow: analysis synthesis -> planning lite -> REASONS Canvas -> human
+  Canvas gate -> test plan lite -> TDD implementation -> validation -> review -> PR.
+  Input: Linear issue identifier (e.g. 'ENG-123'). No GitHub issue created — PR links directly to Linear.
+
+provider: claude
+model: sonnet
+interactive: true
+
+nodes:
+  - id: setup
+    model: haiku
+    prompt: |
+      Read the Linear issue specified in $ARGUMENTS (format: "ENG-NNN").
+
+      1. Extract the Linear issue identifier from $ARGUMENTS.
+      2. Read `.spdd/config.yml` → get `linear.api_key_env`.
+         Resolve API key:
+         KEY_VAR=$(grep 'api_key_env:' .spdd/config.yml | awk '{print $2}' | tr -d '"')
+         KEY=$(printenv "$KEY_VAR")
+         If KEY is empty, abort: "LINEAR_API_KEY env var not set."
+      3. Fetch issue from Linear:
+         curl -s -X POST https://api.linear.app/graphql \
+           -H "Authorization: $KEY" \
+           -H "Content-Type: application/json" \
+           -d '{"query":"query{issue(id:\"ENG-NNN\"){identifier title description url}}"}'
+      4. Write `.spdd/meta.yml`:
+         feature: "<title from Linear>"
+         linear_issue_id: "ENG-NNN"
+         linear_issue_url: "<url>"
+         issue_number: ""
+         item_id: "ENG-NNN"
+         workflow: spdd-feature
+         started_at: <current ISO timestamp>
+      5. Write `.spdd/costs.yml`: []
+
+      Output exactly: ISSUE=ENG-NNN
+
+  - id: setup-board
+    model: haiku
+    depends_on: [setup]
+    prompt: |
+      Load and execute: .archon/commands/linear-setup-board.md
+
+  - id: analysis
+    model: sonnet
+    depends_on: [setup-board]
+    prompt: |
+      # SPDD Balanced - Analysis
+
+      Read feature title and description from .spdd/meta.yml.
+
+      Read `.spdd/config.yml` and use `brain_path` to load:
+      - `50-skills/agents/AiLM/1-analysis/researcher/SKILL.md`
+
+      Produce `.spdd/analysis/FEAT-{NNN}_{slug}.md` using
+      `.spdd/templates/analysis-synthesis.md`.
+
+      Include problem framing, findings, scope, risks and open questions.
+      Stop after writing the artifact.
+
+      ## Cost tracking
+      Append to `.spdd/costs.yml`:
+      - node: analysis
+        model: sonnet
+        completed_at: <current ISO timestamp>
+        artifacts:
+          - .spdd/analysis/FEAT-{NNN}_{slug}.md
+
+  - id: planning
+    model: sonnet
+    depends_on: [analysis]
+    prompt: |
+      # SPDD Balanced - Planning Lite
+
+      Read `.spdd/config.yml` and load:
+      - `50-skills/agents/AiLM/2-planning/product-manager/SKILL.md`
+
+      Inputs:
+      - `.spdd/analysis/FEAT-{NNN}_{slug}.md`
+
+      Produce `.spdd/planning/FEAT-{NNN}_prd.md` using
+      `.spdd/templates/prd.md`.
+
+      Keep it concise: problem, outcome, requirements, acceptance criteria,
+      non-functional constraints and explicit out-of-scope.
+
+      ## Cost tracking
+      Append to `.spdd/costs.yml`:
+      - node: planning
+        model: sonnet
+        completed_at: <current ISO timestamp>
+        artifacts:
+          - .spdd/planning/FEAT-{NNN}_prd.md
+
+  - id: canvas
+    model: sonnet
+    depends_on: [planning]
+    prompt: |
+      # SPDD Balanced - REASONS Canvas
+
+      Read `.spdd/config.yml` and load:
+      - `50-skills/agents/AiLM/3-solutioning/architect/SKILL.md`
+
+      Inputs:
+      - `.spdd/analysis/FEAT-{NNN}_{slug}.md`
+      - `.spdd/planning/FEAT-{NNN}_prd.md`
+      - `.spdd/architecture.md`
+      - `.spdd/conventions.md`
+      - `.spdd/norms.md`
+      - `.spdd/safeguards.md`
+      - `.spdd/golden-principles.md`
+
+      Produce `.spdd/canvas/FEAT-{NNN}_{slug}.md` with frontmatter
+      `status: approved`, `approved_by: auto`, `approved_at: <current ISO timestamp>`
+      and all REASONS sections filled.
+
+      ## Cost tracking
+      Append to `.spdd/costs.yml`:
+      - node: canvas
+        model: sonnet
+        completed_at: <current ISO timestamp>
+        artifacts:
+          - .spdd/canvas/FEAT-{NNN}_{slug}.md
+
+  - id: test-plan-lite
+    model: sonnet
+    depends_on: [canvas]
+    prompt: |
+      # SPDD Balanced - Test Plan Lite
+
+      Read `.spdd/config.yml` and load:
+      - `50-skills/agents/AiLM/4-implementation/test-engineer/SKILL.md`
+
+      Inputs:
+      - `.spdd/canvas/FEAT-{NNN}_{slug}.md`
+      - `.spdd/planning/FEAT-{NNN}_prd.md`
+
+      Produce `.spdd/tests/FEAT-{NNN}_test-plan-lite.md`.
+      Cover must-test behaviors, essential edge cases and validation commands.
+
+      ## Cost tracking
+      Append to `.spdd/costs.yml`:
+      - node: test-plan-lite
+        model: sonnet
+        completed_at: <current ISO timestamp>
+        artifacts:
+          - .spdd/tests/FEAT-{NNN}_test-plan-lite.md
+
+  - id: implement
+    model: sonnet
+    depends_on: [test-plan-lite]
+    loop:
+      prompt: |
+        # SPDD Balanced - Implementation
+
+        Read `.spdd/config.yml` and load:
+        - `50-skills/agents/AiLM/4-implementation/implementer/SKILL.md`
+
+        Inputs:
+        - `.spdd/canvas/FEAT-{NNN}_{slug}.md` with `status: approved`
+        - `.spdd/tests/FEAT-{NNN}_test-plan-lite.md`
+        - `.spdd/norms.md`, `.spdd/safeguards.md`, `.spdd/conventions.md`
+
+        Execute exactly one unfinished Operation from the Canvas:
+        Red -> Green -> Refactor -> atomic commit -> mark Operation done.
+
+        Append to `.spdd/costs.yml`:
+        - node: implement
+          model: sonnet
+          completed_at: <current ISO timestamp>
+          artifacts: []
+
+        If all Operations are done, respond exactly `ALL_TASKS_COMPLETE`.
+      until: ALL_TASKS_COMPLETE
+      fresh_context: true
+      max_iterations: 30
+
+  - id: validation
+    model: sonnet
+    depends_on: [implement]
+    prompt: |
+      # SPDD Balanced - Validation
+
+      Read `.spdd/config.yml` validation commands and run:
+      1. npm test
+      2. npm run typecheck
+      3. npm run lint, if the script exists
+
+      If all pass, respond with `VALIDATION_PASSED`.
+      If anything fails, report the exact failure and fix it before continuing.
+
+      ## Cost tracking
+      Append to `.spdd/costs.yml`:
+      - node: validation
+        model: sonnet
+        completed_at: <current ISO timestamp>
+        artifacts: []
+
+  - id: security-review
+    model: sonnet
+    depends_on: [validation]
+    prompt: |
+      ## Security Gate — Security Review (OWASP Top 10)
+
+      Read `.spdd/config.yml`, load security-reviewer SKILL from `brain_path`.
+
+      ## Linear — Mark In Review
+      Load and execute: .archon/commands/linear-mark-in-review.md
+
+      Run: git diff main...HEAD -- src/ tests/ app/ lib/ 2>/dev/null || git diff HEAD~1...HEAD
+      Read Canvas, conventions, safeguards.
+      Read `.spdd/security/FEAT-{NNN}_threat-model.md` and
+      `.spdd/security/FEAT-{NNN}_red-team-canvas.md` if they exist.
+
+      Steps:
+      1. Blind Hunt — flag raw issues from diff.
+      2. OWASP Top 10 — evaluate each category. Mark N/A with reason.
+      3. Classify: Critical/High/Medium/Low/Info.
+      4. Verdict: approved | changes_required | blocked.
+
+      Produce `.spdd/security/FEAT-{NNN}_security-review.md` using `.spdd/templates/security-review.md`.
+      Do NOT stop. Always continue to the approve-security gate.
+      At the end, emit exactly one line:
+      `security review verdict: <verdict>. <one-sentence summary of findings or "No critical findings.">`
+
+      ## Cost tracking
+      Append to `.spdd/costs.yml`:
+      - node: security-review
+        model: sonnet
+        completed_at: <current ISO timestamp>
+        artifacts:
+          - .spdd/security/FEAT-{NNN}_security-review.md
+
+  - id: review
+    model: sonnet
+    depends_on: [security-review]
+    prompt: |
+      ## Code Review
+
+      Read `.spdd/config.yml` → check `workflow.reviewer` (default: `claude` if absent).
+
+      ### If reviewer = claude (or field missing):
+      Read `.spdd/config.yml` and load code-reviewer SKILL from `brain_path`.
+      Review diff against Canvas, PRD, test plan, Golden Principles, Norms
+      and Safeguards. Apply P0/P1 fixes inline. Save report at
+      `.spdd/reviews/FEAT-{NNN}_review.md`.
+
+      ### If reviewer = codex:
+      1. Read `.spdd/meta.yml` → extract `issue_number` as NNN (zero-padded to 3 digits).
+      2. Run: mkdir -p .spdd/reviews
+      3. Run:
+         codex review --base main > .spdd/reviews/FEAT-<NNN>_review.md
+      4. Verify file is non-empty; if not, write fallback: "# Codex Review\nreviewer: codex\nverdict: error\nCodex returned no output."
+
+      ## Cost tracking
+      Append to `.spdd/costs.yml`:
+      - node: review
+        model: <sonnet if reviewer=claude | codex if reviewer=codex>
+        completed_at: <current ISO timestamp>
+        artifacts:
+          - .spdd/reviews/FEAT-{NNN}_review.md
+
+  - id: create-pr
+    model: sonnet
+    depends_on: [review]
+    prompt: |
+      # SPDD Balanced - Pull Request
+
+      ## Cost Estimate
+      1. Read `.spdd/costs.yml` (list of {node, model, artifacts}).
+      2. For each entry, read each artifact file and count total characters. Divide by 4 to estimate tokens.
+         Nodes with empty artifacts list use 200 tokens as a baseline estimate.
+      3. Apply output token pricing: haiku=$1.25/M, sonnet=$15/M, opus=$75/M.
+         For entries with model=codex, mark cost as "$0.00 (OpenAI — billed separately)".
+      4. Build a markdown table:
+         | Node | Model | Est. Tokens | Est. Cost |
+         |------|-------|-------------|-----------|
+         | **Total** | | ~NNN | ~$0.00 |
+      Save table as COST_TABLE variable.
+
+      ## Create PR
+      1. Read `.spdd/meta.yml` → get linear_issue_id (e.g. ENG-123) and feature title.
+      2. Extract NNN from linear_issue_id.
+      3. Push branch: git push -u origin HEAD
+      4. Create PR:
+         gh pr create \
+           --title "feat(FEAT-{NNN}): {slug}" \
+           --body "Closes {linear_issue_id}
+
+         ## Canvas
+         See `.spdd/canvas/FEAT-{NNN}_{slug}.md`
+
+         ## PRD
+         See `.spdd/planning/FEAT-{NNN}_prd.md`
+
+         ## Test plan
+         See `.spdd/tests/FEAT-{NNN}_test-plan-lite.md`
+
+         ## Validation
+         All checks passed.
+
+         ## Review
+         See `.spdd/reviews/FEAT-{NNN}_review.md`
+
+         ## Cost Estimate
+         {COST_TABLE}"
+      5. Apply labels: type:feature, review:pending
+      6. Post cost table as comment on Linear issue:
+         COMMENT_BODY="## Cost Estimate (spdd-feature)\n\n{COST_TABLE}"
+         Load and execute: .archon/commands/linear-post-comment.md
+      7. Update Linear issue state → In Review:
+         Load and execute: .archon/commands/linear-mark-in-review.md
+      8. Report PR URL.

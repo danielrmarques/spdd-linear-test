@@ -1,0 +1,268 @@
+name: spdd-feature-exec
+description: |
+  Execution-only workflow for the adaptive SPDD flow. Assumes an approved
+  Execution Pack exists at `.spdd/execution/FEAT-{NNN}_execution-pack.md`
+  (status: approved). Skips analysis/planning — the pack IS the contract.
+
+  Input: Linear issue identifier (e.g. "ENG-123"). Archon reads title and
+  description from Linear. No GitHub issue is created — PRs link directly
+  to Linear via "Closes ENG-NNN" magic words.
+
+  Runs: setup-from-linear -> validate-execution-pack -> setup-board (Linear) ->
+  canvas -> test-plan -> implement (loop) -> validation -> review -> create-pr.
+
+  Typically triggered after the interactive spdd-feature-prep skill produces
+  an approved Execution Pack and a ready Linear issue.
+
+provider: claude
+model: sonnet
+interactive: false
+
+nodes:
+  - id: setup-from-linear
+    model: haiku
+    prompt: |
+      Read the Linear issue specified in $ARGUMENTS (format: "ENG-NNN").
+
+      1. Extract the Linear issue identifier from $ARGUMENTS (e.g. "ENG-123").
+         Strip any trailing description after the identifier.
+
+      2. Read `.spdd/config.yml` → get `linear.api_key_env`.
+         Resolve the API key:
+         KEY_VAR=$(grep 'api_key_env:' .spdd/config.yml | awk '{print $2}' | tr -d '"')
+         KEY=$(printenv "$KEY_VAR")
+         If KEY is empty, abort: "LINEAR_API_KEY env var not set."
+
+      3. Fetch issue details from Linear API:
+         curl -s -X POST https://api.linear.app/graphql \
+           -H "Authorization: $KEY" \
+           -H "Content-Type: application/json" \
+           -d '{"query":"query{issue(id:\"ENG-NNN\"){id identifier title description url}}"}'
+
+      4. Write `.spdd/meta.yml`:
+         feature: "<title from Linear>"
+         linear_issue_id: "ENG-NNN"
+         linear_issue_url: "<url from Linear>"
+         issue_number: ""
+         item_id: "ENG-NNN"
+         workflow: spdd-feature-exec
+         started_at: <current ISO timestamp>
+
+      5. If `.spdd/costs.yml` doesn't exist, write `[]`.
+
+      Output exactly: ISSUE=ENG-NNN
+
+  - id: validate-execution-pack
+    model: haiku
+    depends_on: [setup-from-linear]
+    prompt: |
+      ## Validate Execution Pack exists and is approved
+
+      Read `.spdd/meta.yml` for linear_issue_id → extract number as NNN
+      (e.g. ENG-123 → NNN = 123, zero-padded to 3 digits → 123).
+
+      Mechanical checks (do all in Bash, no LLM judgment needed):
+      1. `test -f .spdd/execution/FEAT-{NNN}_execution-pack.md` — MUST pass
+      2. Frontmatter `status:` value MUST be `approved`:
+         awk '/^---$/{n++} n==1' .spdd/execution/FEAT-{NNN}_execution-pack.md | grep -E '^status:\s*approved\s*$'
+      3. If `.spdd/domain-rules.md` exists, its mtime MUST be older than the
+         pack's `approved_at` field. If newer, the pack is stale and the run
+         MUST abort with a clear error.
+
+      If ANY check fails, emit on stdout and exit non-zero:
+      ```
+      EXECUTION_PACK_INVALID reason=<one of: missing | not_approved | stale>
+      detail=<one-line explanation>
+      next_action=Use spdd-feature-prep skill to (re)generate the pack.
+      ```
+
+      If all checks pass, emit:
+      ```
+      EXECUTION_PACK_VALID path=.spdd/execution/FEAT-{NNN}_execution-pack.md
+      ```
+
+  - id: setup-board
+    model: haiku
+    depends_on: [validate-execution-pack]
+    prompt: |
+      Load and execute: .archon/commands/linear-setup-board.md
+
+  - id: canvas
+    model: sonnet
+    depends_on: [setup-board]
+    prompt: |
+      ## Solutioning — generate REASONS Canvas from the Execution Pack
+
+      Read `.spdd/config.yml` and load:
+      - `50-skills/agents/AiLM/3-solutioning/architect/SKILL.md`
+
+      Inputs:
+      - `.spdd/execution/FEAT-{NNN}_execution-pack.md` (THE source of truth)
+      - `.spdd/architecture.md`, `.spdd/conventions.md`, `.spdd/norms.md`,
+        `.spdd/safeguards.md`, `.spdd/golden-principles.md` (load if present)
+      - `.understand-anything/knowledge-graph.json` (load if present)
+
+      Produce `.spdd/canvas/FEAT-{NNN}_{slug}.md` with frontmatter:
+      - status: approved
+      - approved_by: auto (Execution Pack already approved)
+      - approved_at: <current ISO ts>
+
+      Fill all REASONS sections (Risks, Effects, Alternatives, Specification,
+      Operations, Norms, Safeguards). The Operations list MUST be executable
+      and trace back to the Execution Pack's "Scope" bullets.
+
+      ## Cost tracking
+      Append to `.spdd/costs.yml`:
+      - node: canvas
+        model: sonnet
+        completed_at: <ISO ts>
+        artifacts:
+          - .spdd/canvas/FEAT-{NNN}_{slug}.md
+
+  - id: test-plan
+    model: sonnet
+    depends_on: [canvas]
+    prompt: |
+      Read `.spdd/config.yml` and load:
+      - `50-skills/agents/AiLM/4-implementation/test-engineer/SKILL.md`
+
+      Inputs:
+      - `.spdd/execution/FEAT-{NNN}_execution-pack.md` (Test expectations section)
+      - `.spdd/canvas/FEAT-{NNN}_{slug}.md`
+
+      Produce `.spdd/tests/FEAT-{NNN}_test-plan-lite.md`. Cover the
+      "Test expectations" from the pack plus must-test behaviors derived
+      from acceptance criteria.
+
+      ## Cost tracking
+      Append to `.spdd/costs.yml`:
+      - node: test-plan
+        model: sonnet
+        completed_at: <ISO ts>
+        artifacts:
+          - .spdd/tests/FEAT-{NNN}_test-plan-lite.md
+
+  - id: implement
+    model: sonnet
+    depends_on: [test-plan]
+    loop:
+      prompt: |
+        Read `.spdd/config.yml` and load:
+        - `50-skills/agents/AiLM/4-implementation/implementer/SKILL.md`
+
+        Inputs:
+        - `.spdd/canvas/FEAT-{NNN}_{slug}.md` with `status: approved`
+        - `.spdd/tests/FEAT-{NNN}_test-plan-lite.md`
+        - `.spdd/execution/FEAT-{NNN}_execution-pack.md` (acceptance criteria)
+        - `.spdd/norms.md`, `.spdd/safeguards.md`, `.spdd/conventions.md`
+
+        Execute one unfinished Operation from the Canvas:
+        Red -> Green -> Refactor -> atomic commit -> mark Operation done.
+
+        Append to `.spdd/costs.yml`:
+        - node: implement
+          model: sonnet
+          completed_at: <ISO ts>
+          artifacts: []
+
+        If all Operations done, respond exactly `ALL_TASKS_COMPLETE`.
+      until: ALL_TASKS_COMPLETE
+      fresh_context: true
+      max_iterations: 30
+
+  - id: validation
+    model: sonnet
+    depends_on: [implement]
+    prompt: |
+      Run validation commands from `.spdd/config.yml`:
+      1. npm test
+      2. npm run typecheck (if script exists)
+      3. npm run lint (if script exists)
+
+      If all pass, respond `VALIDATION_PASSED`.
+      If anything fails, fix and re-run before declaring done.
+
+      ## Cost tracking
+      Append to `.spdd/costs.yml`:
+      - node: validation
+        model: sonnet
+        completed_at: <ISO ts>
+        artifacts: []
+
+  - id: review
+    model: sonnet
+    depends_on: [validation]
+    prompt: |
+      ## Code Review
+
+      Read `.spdd/config.yml` → check `workflow.reviewer` (default: claude).
+
+      ### If reviewer = claude:
+      Load `code-reviewer/SKILL.md` from `brain_path`. Review diff against
+      Canvas, Execution Pack acceptance criteria, Golden Principles, Norms,
+      Safeguards. Save to `.spdd/reviews/FEAT-{NNN}_review.md`.
+
+      ### If reviewer = codex:
+      mkdir -p .spdd/reviews
+      codex review --base main > .spdd/reviews/FEAT-{NNN}_review.md
+      If file is empty, write fallback: "# Codex Review\nreviewer: codex\nverdict: error\nCodex returned no output."
+
+      ## Cost tracking
+      Append to `.spdd/costs.yml`:
+      - node: review
+        model: <claude|codex>
+        completed_at: <ISO ts>
+        artifacts:
+          - .spdd/reviews/FEAT-{NNN}_review.md
+
+  - id: create-pr
+    model: sonnet
+    depends_on: [review]
+    prompt: |
+      ## Cost Estimate
+      1. Read `.spdd/costs.yml`.
+      2. For each entry: read each artifact, count chars / 4 = ~tokens.
+      3. Pricing: haiku=$1.25/M, sonnet=$15/M, opus=$75/M, codex=$0 (OpenAI).
+      4. Build cost table:
+         | Node | Model | Est. Tokens | Est. Cost |
+         |------|-------|-------------|-----------|
+         | **Total** | | ~NNN | ~$0.00 |
+      Save table as COST_TABLE variable.
+
+      ## Create PR
+      1. Read `.spdd/meta.yml` → get linear_issue_id (e.g. ENG-123) and feature title.
+      2. Extract NNN (number from linear_issue_id).
+      3. Push branch: git push -u origin HEAD
+      4. Create PR:
+         gh pr create \
+           --title "feat(FEAT-{NNN}): {slug}" \
+           --body "Closes {linear_issue_id}
+
+         ## Execution Pack
+         See \`.spdd/execution/FEAT-{NNN}_execution-pack.md\`
+
+         ## Canvas
+         See \`.spdd/canvas/FEAT-{NNN}_{slug}.md\`
+
+         ## Test plan
+         See \`.spdd/tests/FEAT-{NNN}_test-plan-lite.md\`
+
+         ## Review
+         See \`.spdd/reviews/FEAT-{NNN}_review.md\`
+
+         ## Cost Estimate
+         {COST_TABLE}"
+      5. Apply labels: type:feature, review:pending
+      6. Post cost table as comment on Linear issue:
+         COMMENT_BODY="## Cost Estimate (spdd-feature-exec)\n\n{COST_TABLE}"
+         Load and execute: .archon/commands/linear-post-comment.md
+      7. Update Linear issue state → In Review:
+         Load and execute: .archon/commands/linear-mark-in-review.md
+      8. Report PR URL.
+
+      ## Cost tracking
+      Append to `.spdd/costs.yml`:
+      - node: create-pr
+        model: sonnet
+        completed_at: <ISO ts>
+        artifacts: []
