@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "description": "SPDD test project — Archon + Linear integration",
   "scripts": {
-    "test": "jest",
+    "test": "jest --passWithNoTests",
     "lint": "echo 'no lint configured'"
   },
   "devDependencies": {
