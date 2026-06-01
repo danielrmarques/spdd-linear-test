@@ -1,25 +1,54 @@
 ## Linear — Mark In Review
 
-Read `.spdd/meta.yml` → get `linear_issue_id`.
-Read `.spdd/config.yml` → get `linear.api_key_env`, `linear.states.in_review`.
+Read `.spdd/meta.yml` → `linear_issue_id`.
+Read `.spdd/config.yml` → `linear.api_key_env`, `linear.states.in_review`.
+
+Uses **Python + PyYAML** for config parsing (robust to indentation/order) and
+**jq** for GraphQL payload building.
 
 Execute:
 
-1. Resolve API key and state ID:
-   ```bash
-   KEY_VAR=$(grep 'api_key_env:' .spdd/config.yml | awk '{print $2}' | tr -d '"')
-   KEY=$(printenv "$KEY_VAR")
-   ISSUE_ID=$(grep 'linear_issue_id:' .spdd/meta.yml | awk '{print $2}' | tr -d '"')
-   STATE_ID=$(grep 'in_review:' .spdd/config.yml | awk '{print $2}' | tr -d '"')
-   ```
+```bash
+# 1. Helper: read any dotted path from a YAML file
+yget() {
+  python3 -c "
+import yaml, sys
+d = yaml.safe_load(open(sys.argv[1]))
+for k in sys.argv[2].split('.'):
+    d = d.get(k, '') if isinstance(d, dict) else ''
+    if d == '':
+        break
+print(d if d is not None else '')
+" "$1" "$2"
+}
 
-2. Update issue state to In Review:
-   ```bash
-   curl -s -X POST https://api.linear.app/graphql \
-     -H "Authorization: $KEY" \
-     -H "Content-Type: application/json" \
-     -d "{\"query\": \"mutation { issueUpdate(id: \\\"$ISSUE_ID\\\", input: { stateId: \\\"$STATE_ID\\\" }) { success issue { identifier state { name } } } }\"}" \
-     | grep -q '"success":true' && echo "Linear: state → In Review ✓" || echo "Linear: state update failed (non-fatal)"
-   ```
+# 2. Resolve config values
+KEY_VAR=$(yget .spdd/config.yml linear.api_key_env)
+KEY=$(printenv "$KEY_VAR")
+ISSUE_ID=$(yget .spdd/meta.yml linear_issue_id)
+STATE_ID=$(yget .spdd/config.yml linear.states.in_review)
 
-Non-fatal if STATE_ID contains `{{` (not configured) — skip silently.
+# Skip silently if any are missing/placeholder
+if [ -z "$KEY" ] || [ -z "$ISSUE_ID" ] || [ -z "$STATE_ID" ] || [[ "$STATE_ID" == *"{{"* ]]; then
+  echo "Linear: state update skipped (missing config)"
+  exit 0
+fi
+
+# 3. Build GraphQL payload with variables (no manual escaping)
+PAYLOAD=$(jq -nc \
+  --arg issueId "$ISSUE_ID" \
+  --arg stateId "$STATE_ID" \
+  '{
+    query: "mutation($issueId: String!, $stateId: String!) { issueUpdate(id: $issueId, input: { stateId: $stateId }) { success issue { identifier state { name } } } }",
+    variables: { issueId: $issueId, stateId: $stateId }
+  }')
+
+# 4. POST
+curl -s -X POST https://api.linear.app/graphql \
+  -H "Authorization: $KEY" \
+  -H "Content-Type: application/json" \
+  -d "$PAYLOAD" \
+  | grep -q '"success":true' && echo "Linear: state → In Review ✓" || echo "Linear: state update failed (non-fatal)"
+```
+
+Non-fatal — if the call fails, log and continue.
