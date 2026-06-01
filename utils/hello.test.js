@@ -1,13 +1,9 @@
 const { greet } = require('./hello');
 
-console.assert(
-  greet('World') === 'Hello, World!',
-  'greet("World") should return "Hello, World!"'
-);
+test('greet returns Hello, World!', () => {
+  expect(greet('World')).toBe('Hello, World!');
+});
 
-console.assert(
-  greet('Archon') === 'Hello, Archon!',
-  'greet("Archon") should return "Hello, Archon!"'
-);
-
-console.log('All tests passed.');
+test('greet returns Hello, Archon!', () => {
+  expect(greet('Archon')).toBe('Hello, Archon!');
+});
