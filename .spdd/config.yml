@@ -24,10 +24,10 @@ linear:
   team_id: "9aee933c-99f8-408a-abfd-fb0ca30e0b6d"            # Team UUID (ex: abc-123-...)
   project_id: "10c63c97-590f-42a0-a463-685f8f5828d6"      # Project UUID (opcional — agrupa issues no Linear)
   states:
-    in_progress: "5add3715-b4cf-466a-8f71-d9e062ce64c2"   # UUID do state "In Progress" (started)
-    in_review:   "db22da55-1702-4ab0-8053-f91fa88624df"     # UUID do state "In Review" (started)
-    done:        "953139e6-69fb-4280-a766-b240c717aacc"          # UUID do state "Done" (completed)
-    blocked:     "1324feac-199f-42de-a3c6-798251fb40cf"       # UUID do state "Blocked" (started)
+    in_progress: "1324feac-199f-42de-a3c6-798251fb40cf"   # UUID do state "In Progress" (started)
+    in_review:   "5add3715-b4cf-466a-8f71-d9e062ce64c2"     # UUID do state "In Review" (started)
+    done:        "db22da55-1702-4ab0-8053-f91fa88624df"          # UUID do state "Done" (completed)
+    blocked:     "1603a6c2-f55e-4e2c-ae7b-e2fccff2df6d"       # UUID do state "Blocked" (started)
   labels:
     type_feature:   "a27c9c58-e691-4e55-95d9-aded30bbb57f"    # UUID do label type:feature
     review_pending: "{{linear_label_review}}"     # UUID do label review:pending
