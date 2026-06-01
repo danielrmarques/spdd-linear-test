@@ -22,7 +22,7 @@ workflow:
 linear:
   api_key_env: "LINEAR_API_KEY"            # nome da env var (não o valor)
   team_id: "9aee933c-99f8-408a-abfd-fb0ca30e0b6d"            # Team UUID (ex: abc-123-...)
-  project_id: "{{linear_project_id}}"      # Project UUID (opcional — agrupa issues no Linear)
+  project_id: "10c63c97-590f-42a0-a463-685f8f5828d6"      # Project UUID (opcional — agrupa issues no Linear)
   states:
     in_progress: "5add3715-b4cf-466a-8f71-d9e062ce64c2"   # UUID do state "In Progress" (started)
     in_review:   "db22da55-1702-4ab0-8053-f91fa88624df"     # UUID do state "In Review" (started)
