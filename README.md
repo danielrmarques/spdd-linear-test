@@ -1,5 +1,7 @@
 # spdd-linear-test
 
+![tests](https://img.shields.io/badge/tests-passing-brightgreen)
+
 Projeto de teste da integração **SPDD + Archon + Linear**: issues criadas no
 Linear são executadas automaticamente pelo Archon, que gera código, abre PR no
 GitHub e comenta o resultado de volta no Linear.
